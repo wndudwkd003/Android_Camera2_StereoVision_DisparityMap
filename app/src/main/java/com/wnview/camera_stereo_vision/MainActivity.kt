@@ -62,11 +62,17 @@ class MainActivity : AppCompatActivity() {
 
         binding.fab.setOnClickListener {
             binding.ivResult.setImageBitmap(textureViewUltraWide.bitmap)
+            camera?.logCameraIntrinsicMatrices()
+            Log.d("test", "camera?.getCameraIds(): ${camera?.getCameraIds().toString()}")
+            val fovMap = camera?.listAllCameraFov()
+            Log.d("test", "fovMap: ${fovMap.toString()}")
         }
 
 
         val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         camera = Camera.initInstance(manager)
+
+
 
     }
 
@@ -74,7 +80,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
 
         if (binding.textureViewWide.isAvailable && binding.textureViewUltraWide.isAvailable) {
-            openCamera(binding.textureViewWide.width, binding.textureViewWide.height)
+                openCamera(binding.textureViewWide.width, binding.textureViewWide.height)
             return
         }
 
@@ -88,8 +94,6 @@ class MainActivity : AppCompatActivity() {
 
             if (result1.state != State.ON_TEXTURE_AVAILABLE)
                 Log.e(TAG, "camera1View unexpected state = $result1.state")
-
-
 
             when (result0.state) {
                 State.ON_TEXTURE_AVAILABLE -> {

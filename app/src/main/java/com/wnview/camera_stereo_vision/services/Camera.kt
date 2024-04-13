@@ -33,6 +33,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Size
 import android.util.SparseIntArray
 import android.view.OrientationEventListener
 import android.view.Surface
@@ -44,6 +45,7 @@ import com.wnview.camera_stereo_vision.camera.isAutoExposureSupported
 import com.wnview.camera_stereo_vision.camera.isContinuousAutoFocusSupported
 import com.wnview.camera_stereo_vision.models.CameraIdInfo
 import java.util.concurrent.*
+import kotlin.math.atan
 import kotlin.math.floor
 
 private const val TAG = "CAMERA"
@@ -103,6 +105,7 @@ class Camera constructor(private val cameraManager: CameraManager) {
     private var captureSession: CameraCaptureSession? = null
     private var requestBuilder: CaptureRequest.Builder? = null
     private var focusListener: OnFocusListener? = null
+
 
     private var state = State.PREVIEW
     private var aeMode = CaptureRequest.CONTROL_AE_MODE_ON
@@ -426,13 +429,60 @@ class Camera constructor(private val cameraManager: CameraManager) {
         )
     }
 
+    private fun getCameraCharacteristics(cameraId: String): CameraCharacteristics {
+        return cameraManager.getCameraCharacteristics(cameraId)
+    }
+
+    private fun calculateCameraFov(cameraId: String): Pair<Double, Double> {
+        val characteristics = getCameraCharacteristics(cameraId)
+        return calculateFov(characteristics)
+    }
+
+    fun listAllCameraFov(): Map<String, Pair<Double, Double>> {
+        val fovMap = mutableMapOf<String, Pair<Double, Double>>()
+        physicalCameraIds.forEach { cameraId ->
+            val fov = calculateCameraFov(cameraId)
+            fovMap[cameraId] = fov
+        }
+        return fovMap.toMap()
+    }
+
+    fun calculateFov(characteristics: CameraCharacteristics): Pair<Double, Double> {
+        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)!!
+        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)!!
+
+        val focalLength = focalLengths[0] // 초점 거리 (mm)
+        val sensorWidth = sensorSize.width // 센서 너비 (mm)
+        val sensorHeight = sensorSize.height // 센서 높이 (mm)
+
+        val horizontalFov = Math.toDegrees(2.0 * atan((sensorWidth / 2.0) / focalLength))
+        val verticalFov = Math.toDegrees(2.0 * atan((sensorHeight / 2.0) / focalLength))
+
+        return Pair(horizontalFov, verticalFov)
+    }
+
+    // 물리 카메라 ID에 대한 내부 행렬을 로그로 출력
+    fun logCameraIntrinsicMatrices() {
+
+        val matrix = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[0])
+        Log.d(TAG, "test ${getCameraIds().physicalCameraIds[0]} Intrinsic Matrix: ${matrix.joinToString { row -> row.joinToString { it.toString() } }}")
+
+        val matrix2 = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[1])
+        Log.d(TAG, "test ${getCameraIds().physicalCameraIds[1]} Intrinsic Matrix: ${matrix2.joinToString { row -> row.joinToString { it.toString() } }}")
+
+    }
+
     private fun startDualCamera(surfaces: List<Surface>) {
         val outputConfigs = surfaces.mapIndexed { index, surface ->
             val physicalCameraId = physicalCameraIds.toList()[index]
+            Log.d("test", "index: $index")
+            Log.d("test", "physicalCameraId: $physicalCameraId")
             val config = OutputConfiguration(surface)
             config.setPhysicalCameraId(physicalCameraId)
             config
         }
+
+
 
         val executor = Executors.newCachedThreadPool()
         val sessionConfig = SessionConfiguration(
@@ -442,6 +492,35 @@ class Camera constructor(private val cameraManager: CameraManager) {
             captureStateCallback
         )
         cameraDevice?.createCaptureSession(sessionConfig)
+    }
+
+    // 카메라의 내부 행렬을 계산하는 함수 추가
+    private fun calculateIntrinsicMatrix(cameraId: String): Array<DoubleArray> {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+
+        // 센서 정보를 가져옵니다.
+        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        val pixelArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: Size(4000, 3000) // 예를 들어 4000x3000이 기본값
+
+        // 초점 거리를 가져옵니다 (밀리미터 단위)
+        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: floatArrayOf(4.25f) // 예를 들어 4.25mm가 기본값
+
+        // 주점 (cx, cy)은 이미지 센서의 중앙으로 가정합니다.
+        val cx = pixelArraySize.width / 2.0
+        val cy = pixelArraySize.height / 2.0
+
+        // 초점 거리 (fx, fy)는 센서 크기와 최대 해상도를 기반으로 계산됩니다.
+        val fx = focalLengths[0] * (pixelArraySize.width / sensorSize!!.width)
+        val fy = focalLengths[0] * (pixelArraySize.height / sensorSize.height)
+
+        // 내부 행렬 구성
+        val intrinsicMatrix = arrayOf(
+            doubleArrayOf(fx.toDouble(), 0.0, cx),
+            doubleArrayOf(0.0, fy.toDouble(), cy),
+            doubleArrayOf(0.0, 0.0, 1.0)
+        )
+
+        return intrinsicMatrix
     }
 
     /**
