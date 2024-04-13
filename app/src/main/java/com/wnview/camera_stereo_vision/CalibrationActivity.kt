@@ -1,26 +1,32 @@
 package com.wnview.camera_stereo_vision
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.hardware.camera2.CameraManager
-import androidx.appcompat.app.AppCompatActivity
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.View
 import android.widget.ImageView
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.multicameraapi.ui.main.ErrorMessageDialog
 import com.wnview.camera_stereo_vision.databinding.ActivityCalibrationBinding
-import com.wnview.camera_stereo_vision.databinding.ActivityMainBinding
 import com.wnview.camera_stereo_vision.listeners.SurfaceTextureWaiter
 import com.wnview.camera_stereo_vision.models.State
 import com.wnview.camera_stereo_vision.services.Camera
@@ -37,14 +43,21 @@ import org.opencv.core.MatOfPoint3f
 import org.opencv.core.Point3
 import org.opencv.core.TermCriteria
 import org.opencv.imgproc.Imgproc
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import kotlin.math.max
+
 
 class CalibrationActivity : AppCompatActivity() {
 
     companion object {
-        private val TAG = CalibrationActivity::class.java.toString()
+        private val TAG = "test"
         private const val FRAGMENT_TAG_DIALOG = "tag_dialog"
         private const val REQUEST_CAMERA_PERMISSION = 1000
+        private const val REQUEST_STORAGE_PERMISSION = 1001
+        private const val REQUEST_CODE = 1002
+
         fun newInstance() = CalibrationActivity()
     }
 
@@ -58,7 +71,7 @@ class CalibrationActivity : AppCompatActivity() {
 
     private val images = ArrayList<Mat>()
     private val checkerboardSize = org.opencv.core.Size(6.0, 9.0) // 체커보드의 각 줄에 있는 내부 코너 수
-    private val imageSize = org.opencv.core.Size() // 이미지 크기를 저장할 변수
+    private val imageSize = org.opencv.core.Size(1.0, 1.0) // 이미지 크기를 저장할 변수
     private val objectPoints = ArrayList<Mat>() // 3D 공간에서의 포인트
     private val imagePoints = ArrayList<Mat>() // 2D 이미지 평면에서의 포인트
 
@@ -74,10 +87,9 @@ class CalibrationActivity : AppCompatActivity() {
         else
             Log.d("OpenCV", "OpenCV loaded Successfully!")
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
-            return
-        }
+
+        checkAndRequestPermissions()
+
 
         textureView = binding.textureView
         resultImageView = binding.ivResult
@@ -86,16 +98,20 @@ class CalibrationActivity : AppCompatActivity() {
         camera = Camera.initInstance(manager)
 
         binding.fab.setOnClickListener {
-            if (images.size < 15) {
+            runOnUiThread {
+                resultImageView.visibility = View.INVISIBLE
+            }
+            if (images.size < 5) {
+
                 // 현재 TextureView의 내용을 비트맵으로 가져와서 처리
                 val bitmap = textureView.bitmap
                 val mat = bitmapToMat(bitmap!!)
                 findAndDrawChessboardCorners(mat)
 
-
+                saveImageToGallery(bitmap, "image_${System.currentTimeMillis()}.jpg") // Save the bitmap as JPEG
                 if (images.size >= 1) {
 
-                    updateImageView(images[0])
+                    updateImageView(images.last())
                 }
 
             } else {
@@ -104,6 +120,57 @@ class CalibrationActivity : AppCompatActivity() {
             }
         }
 
+    }
+
+
+    private fun checkAndRequestPermissions() {
+        val permissionsRequired = arrayOf(
+            Manifest.permission.CAMERA
+        )
+
+        val permissionsNotGranted = permissionsRequired.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (permissionsNotGranted.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissionsNotGranted.toTypedArray(), REQUEST_CAMERA_PERMISSION)
+        } else {
+            continueWithCameraAndStorageAccess()
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+            intent.addCategory("android.intent.category.DEFAULT")
+            intent.data =
+                Uri.parse(String.format("package:%s", applicationContext.packageName))
+            startActivityForResult(intent, REQUEST_CODE)
+        }
+    }
+
+    private fun continueWithCameraAndStorageAccess() {
+        Toast.makeText(this, "All necessary permissions granted", Toast.LENGTH_SHORT).show()
+        // Initialize camera or perform other actions that require permissions
+    }
+
+    private fun saveImageToGallery(bitmap: Bitmap, displayName: String) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+            }
+        }
+
+        val resolver = contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        uri?.let {
+            resolver.openOutputStream(it).use { outputStream ->
+                outputStream?.let { it1 -> bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it1) }
+            }
+            Toast.makeText(this, "Image saved to Gallery", Toast.LENGTH_SHORT).show()
+        } ?: run {
+            Toast.makeText(this, "Failed to save image", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateImageView(image: Mat) {
@@ -123,6 +190,9 @@ class CalibrationActivity : AppCompatActivity() {
     }
 
     private fun findAndDrawChessboardCorners(image: Mat) {
+        val color = Mat()
+        image.copyTo(color)
+
         val gray = Mat()
         Imgproc.cvtColor(image, gray, Imgproc.COLOR_RGB2GRAY)
         val corners = MatOfPoint2f()
@@ -130,48 +200,77 @@ class CalibrationActivity : AppCompatActivity() {
         Toast.makeText(this, found.toString(), Toast.LENGTH_SHORT).show()
         if (found) {
             // 반복 알고리즘의 종료 기준 설정
-            val criteria = TermCriteria(TermCriteria.EPS + TermCriteria.MAX_ITER, 20, 0.1)
+            val criteria = TermCriteria(TermCriteria.EPS + TermCriteria.MAX_ITER, 10, 0.1)
 
             // 세밀한 코너 위치 조정
             Imgproc.cornerSubPix(gray, corners, org.opencv.core.Size(2.0, 2.0), org.opencv.core.Size(-1.0, -1.0), criteria)
 
             // 체커보드 코너를 이미지에 표시
             Calib3d.drawChessboardCorners(image, checkerboardSize, corners, found)
-            images.add(image)
+            images.add(color)
         }
     }
 
 
     private fun performCalibration() {
-        // 원점의 3D 포인트 생성
-        val objp = ArrayList<Point3>().apply {
-            for (i in 0 until checkerboardSize.height.toInt()) {
-                for (j in 0 until checkerboardSize.width.toInt()) {
-                    add(Point3(j.toDouble(), i.toDouble(), 0.0))
+        lifecycleScope.launch(Dispatchers.Default) {
+            Log.d("test", "performCalibration")
+            // 원점의 3D 포인트 생성
+            val objp = ArrayList<Point3>().apply {
+                for (i in 0 until checkerboardSize.height.toInt()) {
+                    for (j in 0 until checkerboardSize.width.toInt()) {
+                        val point3 = Point3(j.toDouble(), i.toDouble(), 0.0)
+                        add(point3)
+                        Log.d("test", "point3: $point3")
+                    }
                 }
             }
-        }
-        val obj = MatOfPoint3f()
-        obj.fromList(objp) // 여기에서 objp를 obj에 설정합니다.
+            val obj = MatOfPoint3f()
+            obj.fromList(objp) // 여기에서 objp를 obj에 설정합니다.
+            Log.d("test", "obj: $obj")
 
-        // 모든 이미지에 대해 반복하여 각 이미지의 2D 포인트와 매핑된 3D 포인트를 저장합니다.
-        for (image in images) {
-            val imageCorners = findImageCorners(image)
-            if (imageCorners != null) {
-                objectPoints.add(obj)
-                imagePoints.add(imageCorners)
+
+            // 모든 이미지에 대해 반복하여 각 이미지의 2D 포인트와 매핑된 3D 포인트를 저장합니다.
+            for (image in images) {
+                Log.d(TAG, "image: ${image}")
+
+
+                updateImageView(image)
+
+
+                val imageCorners = findImageCorners(image)
+
+                Log.d(TAG, "image: ${imageCorners}")
+
+                if (imageCorners != null) {
+                    Log.d(TAG, "imageCorners != null")
+
+                    objectPoints.add(obj.clone())
+                    imagePoints.add(imageCorners)
+                    Log.d(TAG, "obj: $obj, imageCorners: $imageCorners")
+                }
+                Log.d(TAG, "????")
             }
+
+
+            val cameraMatrix = Mat()
+            val distCoeffs = Mat()
+            val rvecs = ArrayList<Mat>()
+            val tvecs = ArrayList<Mat>()
+
+            Calib3d.calibrateCamera(
+                objectPoints,
+                imagePoints,
+                imageSize,
+                cameraMatrix,
+                distCoeffs,
+                rvecs,
+                tvecs
+            )
+
+            Log.d(TAG, "Camera Matrix: $cameraMatrix")
+            Log.d(TAG, "Distortion Coefficients: $distCoeffs")
         }
-
-        val cameraMatrix = Mat()
-        val distCoeffs = Mat()
-        val rvecs = Mat()
-        val tvecs = Mat()
-
-       //  Calib3d.calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix, distCoeffs, rvecs, tvecs)
-
-        Log.d(TAG, "Camera Matrix: $cameraMatrix")
-        Log.d(TAG, "Distortion Coefficients: $distCoeffs")
     }
     private fun findImageCorners(image: Mat): MatOfPoint2f? {
         val gray = Mat()
@@ -229,21 +328,26 @@ class CalibrationActivity : AppCompatActivity() {
         )
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray) {
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
-            if (grantResults.size != 1 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-                ErrorMessageDialog.newInstance(getString(R.string.request_permission))
-                    .show(supportFragmentManager, FRAGMENT_TAG_DIALOG)
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                continueWithCameraAndStorageAccess()
+            } else {
+                permissions.filterIndexed { index, _ -> grantResults[index] != PackageManager.PERMISSION_GRANTED }
+                    .forEach {
+                        if (!ActivityCompat.shouldShowRequestPermissionRationale(this, it)) {
+                            ErrorMessageDialog.newInstance("You need to go to settings and enable permissions.")
+                                .show(supportFragmentManager, FRAGMENT_TAG_DIALOG)
+                        } else {
+                            ErrorMessageDialog.newInstance("Required permissions are not granted.")
+                                .show(supportFragmentManager, FRAGMENT_TAG_DIALOG)
+                        }
+                    }
             }
         }
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
-
-
 
     private fun openCamera(width: Int, height: Int) {
 
