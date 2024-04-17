@@ -1,4 +1,4 @@
-package com.wnview.camera_stereo_vision
+package com.wnview.camera_stereo_vision.main
 
 import android.Manifest
 import android.content.Context
@@ -15,14 +15,14 @@ import android.widget.ImageView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.wnview.camera_stereo_vision.R
 import com.wnview.camera_stereo_vision.listeners.SurfaceTextureWaiter
 import com.wnview.camera_stereo_vision.models.State
 import com.wnview.camera_stereo_vision.services.Camera
-import com.example.multicameraapi.ui.main.ErrorMessageDialog
 import com.wnview.camera_stereo_vision.databinding.ActivityMainBinding
+import com.wnview.camera_stereo_vision.dialogs.ErrorMessageDialog
 import com.wnview.camera_stereo_vision.views.AutoFitTextureView
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max

@@ -1,4 +1,4 @@
-package com.example.multicameraapi.ui.main
+package com.wnview.camera_stereo_vision.dialogs
 
 import android.app.Dialog
 import android.os.Bundle

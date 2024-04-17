@@ -2,4 +2,8 @@
     <string name="app_name">camera_stereo_vision</string>
     <string name="request_permission">This app needs camera permission.</string>
     <string name="camera_error">This device does not support Camera2 API.</string>
+
+
+    <string name="current_camera_id">current camera id: %1$s</string>
+    <string name="current_picture_count">current picture count: %1$d</string>
 </resources>

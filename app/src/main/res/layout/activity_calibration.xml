@@ -4,12 +4,13 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".CalibrationActivity">
+    tools:context=".main.CalibrationActivity">
 
-    <com.wnview.camera_stereo_vision.views.AutoFitTextureView
+    <TextureView
         android:id="@+id/texture_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"/>
+
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:layout_margin="10dp"
@@ -18,13 +19,51 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:src="@drawable/baseline_photo_camera_24"
-        android:id="@+id/fab" />
+        android:id="@+id/fab_take_picture" />
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:layout_margin="10dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:fabCustomSize="30dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        android:src="@drawable/baseline_published_with_changes_24"
+        android:id="@+id/fab_change_camera" />
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:layout_margin="10dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:fabCustomSize="30dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/fab_take_picture"
+        android:src="@drawable/baseline_close_24"
+        android:id="@+id/fab_close_result_picture" />
 
     <ImageView
         android:visibility="invisible"
-        android:id="@+id/iv_result"
+        android:id="@+id/iv_result_picture"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_margin="30dp" />
+        android:layout_margin="60dp" />
+
+    <TextView
+        android:textColor="@color/black"
+        android:id="@+id/tv_camera_id"
+        android:text="current camera id: -1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_margin="10dp" />
+
+    <TextView
+        android:textColor="@color/black"
+        android:id="@+id/tv_picture_count"
+        android:text="current picture count: 0"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:layout_constraintTop_toBottomOf="@id/tv_camera_id"
+        android:layout_margin="10dp" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

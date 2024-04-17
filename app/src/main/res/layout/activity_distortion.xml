@@ -4,7 +4,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".main.MainActivity">
+    tools:context=".main.DistortionActivity">
 
     <com.wnview.camera_stereo_vision.views.AutoFitTextureView
         app:layout_constraintTop_toTopOf="parent"
@@ -15,13 +15,12 @@
         android:layout_weight="1"/>
 
     <com.wnview.camera_stereo_vision.views.AutoFitTextureView
+        app:layout_constraintTop_toBottomOf="@id/texture_view_wide"
+        app:layout_constraintBottom_toTopOf="@id/iv_result"
         android:id="@+id/texture_view_ultra_wide"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        app:layout_constraintBottom_toTopOf="@id/iv_result"
-        app:layout_constraintTop_toBottomOf="@id/texture_view_wide"
-        tools:layout_editor_absoluteX="0dp" />
+        android:layout_weight="1"/>
 
     <ImageView
         android:id="@+id/iv_result"
@@ -36,6 +35,7 @@
         android:layout_margin="15dp"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:src="@drawable/baseline_photo_camera_24"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
