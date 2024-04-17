@@ -461,6 +461,11 @@ class Camera constructor(private val cameraManager: CameraManager) {
         return Pair(horizontalFov, verticalFov)
     }
 
+    private fun processImage(image: Image, isWide: Boolean) {
+        // Convert YUV_420_888 to Mat, apply distortion correction, etc.
+    }
+
+
     // 물리 카메라 ID에 대한 내부 행렬을 로그로 출력
     fun logCameraIntrinsicMatrices() {
 
@@ -473,26 +478,65 @@ class Camera constructor(private val cameraManager: CameraManager) {
     }
 
     private fun startDualCamera(surfaces: List<Surface>) {
+//        val outputConfigs = surfaces.mapIndexed { index, surface ->
+//            val physicalCameraId = physicalCameraIds.toList()[index]
+//            Log.d("test", "index: $index")
+//            Log.d("test", "physicalCameraId: $physicalCameraId")
+//            val config = OutputConfiguration(surface)
+//            config.setPhysicalCameraId(physicalCameraId)
+//            config
+//        }
+
         val outputConfigs = surfaces.mapIndexed { index, surface ->
             val physicalCameraId = physicalCameraIds.toList()[index]
-            Log.d("test", "index: $index")
-            Log.d("test", "physicalCameraId: $physicalCameraId")
             val config = OutputConfiguration(surface)
             config.setPhysicalCameraId(physicalCameraId)
             config
-        }
+        } + OutputConfiguration(imageReaderWide.surface) + OutputConfiguration(imageReaderUltraWide.surface)
+
+        val sessionConfig = SessionConfiguration(
+            SessionConfiguration.SESSION_REGULAR,
+            outputConfigs,
+            Executors.newCachedThreadPool(),
+            captureStateCallback
+        )
 
 
 
         val executor = Executors.newCachedThreadPool()
-        val sessionConfig = SessionConfiguration(
-            SessionConfiguration.SESSION_REGULAR,
-            outputConfigs,
-            executor,
-            captureStateCallback
-        )
+//        val sessionConfig = SessionConfiguration(
+//            SessionConfiguration.SESSION_REGULAR,
+//            outputConfigs,
+//            executor,
+//            captureStateCallback
+//        )
         cameraDevice?.createCaptureSession(sessionConfig)
     }
+
+    private lateinit var imageReaderWide: ImageReader
+    private lateinit var imageReaderUltraWide: ImageReader
+
+    fun setUpImageReaders(wideSize: Size, ultraWideSize: Size) {
+        imageReaderWide = ImageReader.newInstance(wideSize.width, wideSize.height, ImageFormat.YUV_420_888, 2).apply {
+            setOnImageAvailableListener({ reader ->
+                imageListener?.onImageAvailable(reader.acquireNextImage(), true)
+                Log.d("test", "실행중1")
+            }, backgroundHandler)
+        }
+        imageReaderUltraWide = ImageReader.newInstance(ultraWideSize.width, ultraWideSize.height, ImageFormat.YUV_420_888, 2).apply {
+            setOnImageAvailableListener({ reader ->
+                imageListener?.onImageAvailable(reader.acquireNextImage(), false)
+                Log.d("test", "실행중2")
+
+            }, backgroundHandler)
+        }
+    }
+
+    interface ImageAvailableListener {
+        fun onImageAvailable(image: Image, isWide: Boolean)
+    }
+
+    var imageListener: ImageAvailableListener? = null
 
     // 카메라의 내부 행렬을 계산하는 함수 추가
     private fun calculateIntrinsicMatrix(cameraId: String): Array<DoubleArray> {
@@ -560,6 +604,18 @@ class Camera constructor(private val cameraManager: CameraManager) {
             val activeArraySize = characteristics.get(SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect()
             Log.d(TAG, "width ${activeArraySize.width()} height ${activeArraySize.height()} $it")
         }
+    }
+
+    fun startCaptureSession() {
+        val surfaces = listOf(imageReaderWide.surface, imageReaderUltraWide.surface)
+        cameraDevice?.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) {
+                // Capture 설정
+            }
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                Log.e(TAG, "Failed to configure capture session.")
+            }
+        }, backgroundHandler)
     }
 
     private fun startBackgroundHandler() {

@@ -4,11 +4,17 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.RectF
+import android.graphics.YuvImage
 import android.hardware.camera2.CameraManager
+import android.media.Image
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
@@ -36,12 +42,13 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Rect
 import org.opencv.imgproc.Imgproc
+import java.io.ByteArrayOutputStream
 import kotlin.math.max
 
-class DisparityActivity : AppCompatActivity() {
+class DisparityActivity : AppCompatActivity(), Camera.ImageAvailableListener {
 
     companion object {
-        private val TAG = DisparityActivity::class.java.toString()
+        private val TAG = "test"
         private const val FRAGMENT_TAG_DIALOG = "tag_dialog"
         private const val REQUEST_CAMERA_PERMISSION = 1000
         fun newInstance() = DisparityActivity()
@@ -139,6 +146,15 @@ class DisparityActivity : AppCompatActivity() {
 
         val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         camera = Camera.initInstance(manager)
+
+        camera?.imageListener = this
+
+
+        // 카메라 및 ImageReader 설정
+        val wideSize = Size(1920, 1080) // 예제 값, 적절한 해상도 설정 필요
+        val ultraWideSize = Size(1920, 1080) // 예제 값, 적절한 해상도 설정 필요
+        camera?.setUpImageReaders(wideSize, ultraWideSize)
+        camera?.startCaptureSession()
     }
 
     private fun convertToGrayscale(input: Mat): Mat {
@@ -212,6 +228,7 @@ class DisparityActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
 
+        startBackgroundThread()
         if (binding.textureViewWide.isAvailable && binding.textureViewUltraWide.isAvailable) {
                 openCamera(binding.textureViewWide.width, binding.textureViewWide.height)
             return
@@ -249,8 +266,9 @@ class DisparityActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        super.onPause()
         camera?.close()
+        stopBackgroundThread()
+        super.onPause()
     }
 
     private fun requestCameraPermission() {
@@ -307,6 +325,27 @@ class DisparityActivity : AppCompatActivity() {
         }
     }
 
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
+
+    private fun startBackgroundThread() {
+        backgroundThread = HandlerThread("CameraBackground").apply {
+            start()
+            backgroundHandler = Handler(looper)
+        }
+    }
+
+    private fun stopBackgroundThread() {
+        backgroundThread?.quitSafely()
+        try {
+            backgroundThread?.join()
+            backgroundThread = null
+            backgroundHandler = null
+        } catch (e: InterruptedException) {
+            Log.e(TAG, "Error on stopping background thread", e)
+        }
+    }
+
     private fun openDualCamera(width: Int, height: Int) {
 
         val permission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -332,10 +371,18 @@ class DisparityActivity : AppCompatActivity() {
                 textureViewWide.setTransform(matrix)
                 it.open()
 
+
+                it.setUpImageReaders(previewSize, previewSize)
+
+
                 val texture0 = textureViewUltraWide.surfaceTexture!!
                 val texture1 = textureViewWide.surfaceTexture!!
                 texture0.setDefaultBufferSize(previewSize.width, previewSize.height)
                 texture1.setDefaultBufferSize(previewSize.width, previewSize.height)
+
+
+
+
                 it.start(listOf(Surface(texture0), Surface(texture1)))
 
             }
@@ -344,6 +391,27 @@ class DisparityActivity : AppCompatActivity() {
             e.printStackTrace()
         }
     }
+
+
+
+    private fun processImage(image: Image, isWide: Boolean) {
+        Log.d(TAG, "Processing image, isWide: $isWide")
+        if (isWide) {
+            val yuvBytes = imageToByteArray(image)
+            Log.d(TAG, "Image bytes extracted, length: ${yuvBytes.size}")
+
+            val bitmap = convertYuvToBitmap(yuvBytes, image.width, image.height)
+            Log.d(TAG, "Bitmap converted, size: ${bitmap.width}x${bitmap.height}")
+
+            runOnUiThread {
+                Log.d(TAG, "Updating UI with new bitmap")
+                binding.ivResult.setImageBitmap(bitmap)
+            }
+        }
+        image.close()
+    }
+
+
 
     private fun calculateTransform(viewWidth: Int, viewHeight: Int) : Matrix {
         val rotation = windowManager.defaultDisplay.rotation
@@ -369,6 +437,74 @@ class DisparityActivity : AppCompatActivity() {
             matrix.postRotate(180f, centerX, centerY)
         }
         return matrix
+    }
+
+    override fun onImageAvailable(image: Image, isWide: Boolean) {
+        if (isWide) {
+            // 와이드 카메라 이미지를 처리
+            val bitmap = convertImageToBitmap(image) // 이미지 처리 메소드
+            runOnUiThread {
+                binding.ivResult.setImageBitmap(bitmap)
+            }
+        }
+        image.close()
+    }
+
+    private fun convertImageToBitmap(image: Image): Bitmap {
+        // Image format should be YUV_420_888
+        if (image.format != ImageFormat.YUV_420_888) {
+            throw IllegalArgumentException("Image format is not YUV_420_888")
+        }
+
+        val width = image.width
+        val height = image.height
+
+        // Get the YUV data from the image
+        val yBuffer = image.planes[0].buffer
+        val uBuffer = image.planes[1].buffer
+        val vBuffer = image.planes[2].buffer
+
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+
+        val nv21 = ByteArray(ySize + uSize + vSize)
+
+        // U and V are swapped
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val out = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
+        val imageBytes = out.toByteArray()
+
+        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+    }
+
+
+
+    private fun convertYuvToBitmap(yuvBytes: ByteArray, width: Int, height: Int): Bitmap {
+        try {
+            val yuvImage = YuvImage(yuvBytes, ImageFormat.NV21, width, height, null)
+            val out = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
+            val imageBytes = out.toByteArray()
+            return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error converting YUV to Bitmap", e)
+            throw e
+        }
+    }
+
+
+    private fun imageToByteArray(image: Image): ByteArray {
+        // YUV_420_888 이미지를 바이트 배열로 변환
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.capacity())
+        buffer.get(bytes)
+        return bytes
     }
 
 }
