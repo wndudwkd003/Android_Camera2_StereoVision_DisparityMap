@@ -19,13 +19,11 @@
  */
 package com.wnview.camera_stereo_vision.services
 
-import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.hardware.camera2.*
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM
 import android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE
-import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
@@ -33,17 +31,14 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import android.util.Size
 import android.util.SparseIntArray
-import android.view.OrientationEventListener
 import android.view.Surface
 
-import androidx.core.math.MathUtils.clamp
-import com.wnview.camera_stereo_vision.camera.getCaptureSize
 import com.wnview.camera_stereo_vision.camera.getPreviewSize
 import com.wnview.camera_stereo_vision.camera.isAutoExposureSupported
 import com.wnview.camera_stereo_vision.camera.isContinuousAutoFocusSupported
 import com.wnview.camera_stereo_vision.models.CameraIdInfo
+import com.wnview.camera_stereo_vision.utils.calculateIntrinsicMatrix
 import java.util.concurrent.*
 import kotlin.math.atan
 import kotlin.math.floor
@@ -266,10 +261,10 @@ class Camera constructor(private val cameraManager: CameraManager) {
     /**
      * Start camera. Should be called after open() is successful
      */
-    fun start(surfaces: List<Surface>) {
-        this.surfaces = surfaces
-        if(surfaces.size > 1)
-            startDualCamera(surfaces)
+    fun start(pairs: List<Pair<String, Surface>>) {
+        this.surfaces = pairs.map { it.second }
+        startDualCamera(pairs)
+
     }
 
     fun takePicture(handler: ImageHandler) {
@@ -356,19 +351,23 @@ class Camera constructor(private val cameraManager: CameraManager) {
     // 물리 카메라 ID에 대한 내부 행렬을 로그로 출력
     fun logCameraIntrinsicMatrices() {
 
-        val matrix = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[0])
+        val matrix = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[0], cameraManager)
         Log.d(TAG, "test ${getCameraIds().physicalCameraIds[0]} Intrinsic Matrix: ${matrix.joinToString { row -> row.joinToString { it.toString() } }}")
 
-        val matrix2 = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[1])
+        val matrix2 = calculateIntrinsicMatrix(getCameraIds().physicalCameraIds[1], cameraManager)
         Log.d(TAG, "test ${getCameraIds().physicalCameraIds[1]} Intrinsic Matrix: ${matrix2.joinToString { row -> row.joinToString { it.toString() } }}")
 
     }
 
-    private fun startDualCamera(surfaces: List<Surface>) {
-        val outputConfigs = surfaces.mapIndexed { index, surface ->
-            val physicalCameraId = physicalCameraIds.toList()[index]
-            Log.d("test", "index: $index")
+    private fun startDualCamera(pairs: List<Pair<String, Surface>>) {
+
+        val outputConfigs = pairs.mapIndexed { index, pair ->
+            val physicalCameraId = pair.first
+            val surface = pair.second
+
+            Log.d("test", "index : $index")
             Log.d("test", "physicalCameraId: $physicalCameraId")
+
             val config = OutputConfiguration(surface)
             config.setPhysicalCameraId(physicalCameraId)
             config
@@ -390,34 +389,7 @@ class Camera constructor(private val cameraManager: CameraManager) {
 
     var imageListener: ImageAvailableListener? = null
 
-    // 카메라의 내부 행렬을 계산하는 함수 추가
-    private fun calculateIntrinsicMatrix(cameraId: String): Array<DoubleArray> {
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
 
-        // 센서 정보를 가져옵니다.
-        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-        val pixelArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: Size(4000, 3000) // 예를 들어 4000x3000이 기본값
-
-        // 초점 거리를 가져옵니다 (밀리미터 단위)
-        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: floatArrayOf(4.25f) // 예를 들어 4.25mm가 기본값
-
-        // 주점 (cx, cy)은 이미지 센서의 중앙으로 가정합니다.
-        val cx = pixelArraySize.width / 2.0
-        val cy = pixelArraySize.height / 2.0
-
-        // 초점 거리 (fx, fy)는 센서 크기와 최대 해상도를 기반으로 계산됩니다.
-        val fx = focalLengths[0] * (pixelArraySize.width / sensorSize!!.width)
-        val fy = focalLengths[0] * (pixelArraySize.height / sensorSize.height)
-
-        // 내부 행렬 구성
-        val intrinsicMatrix = arrayOf(
-            doubleArrayOf(fx.toDouble(), 0.0, cx),
-            doubleArrayOf(0.0, fy.toDouble(), cy),
-            doubleArrayOf(0.0, 0.0, 1.0)
-        )
-
-        return intrinsicMatrix
-    }
 
     /**
      * Set up camera Id from id list

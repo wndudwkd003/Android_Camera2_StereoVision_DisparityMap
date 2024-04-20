@@ -45,21 +45,6 @@
 
 
         </activity>
-        <activity
-            android:name=".main.MainActivity"
-            android:exported="false">
-
-
-
-        </activity>
-        <activity
-            android:name=".main.DistortionActivity"
-            android:exported="false">
-
-
-
-
-        </activity>
     </application>
 
 </manifest>

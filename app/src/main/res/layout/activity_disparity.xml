@@ -9,29 +9,29 @@
     <com.wnview.camera_stereo_vision.views.AutoFitTextureView
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toStartOf="@id/texture_view_ultra_wide"
         android:id="@+id/texture_view_wide"
-        app:layout_constraintWidth_percent="0.5"
         app:layout_constraintHeight_percent="0.5"
-        android:layout_width="0dp"
+        android:layout_width="wrap_content"
         android:layout_height="0dp"/>
 
     <com.wnview.camera_stereo_vision.views.AutoFitTextureView
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toEndOf="@id/texture_view_wide"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:id="@+id/texture_view_ultra_wide"
-        app:layout_constraintWidth_percent="0.5"
         app:layout_constraintHeight_percent="0.5"
-        android:layout_width="0dp"
+        android:layout_width="wrap_content"
         android:layout_height="0dp"/>
 
     <ImageView
+        android:visibility="invisible"
         android:id="@+id/iv_result"
+        android:layout_margin="50dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintHeight_percent="0.5"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"/>
+        android:layout_width="350dp"
+        android:layout_height="350dp"/>
 
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -50,7 +50,17 @@
         app:fabCustomSize="30dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@id/fab_take_picture"
-        android:src="@drawable/baseline_close_24"
+        android:src="@drawable/baseline_published_with_changes_24"
         android:id="@+id/fab_change_camera" />
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:layout_margin="10dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:fabCustomSize="30dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/fab_change_camera"
+        android:src="@drawable/baseline_close_24"
+        android:id="@+id/fab_close_result_picture" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
