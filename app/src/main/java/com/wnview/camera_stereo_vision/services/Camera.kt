@@ -97,7 +97,7 @@ class Camera constructor(private val cameraManager: CameraManager) {
     }
 
     private val characteristics: CameraCharacteristics
-    private val cameraId: String
+    val cameraId: String
     private lateinit var physicalCameraIds: Set<String>
     private val openLock = Semaphore(1)
     private var cameraDevice: CameraDevice? = null
@@ -113,24 +113,20 @@ class Camera constructor(private val cameraManager: CameraManager) {
 
     private val activeArraySize: Rect
     private var zoomValue: Double = ZOOM_SCALE
-    val maxZoom: Double
 
     private var backgroundHandler: Handler? = null
 
     private var backgroundThread: HandlerThread? = null
     private var surfaces: List<Surface>? = null
     private var isClosed = true
-    private var deviceRotation: Int = 0 // Device rotation is defined by Screen Rotation
 
     init {
         cameraId = setUpCameraId(manager = cameraManager)
         characteristics = cameraManager.getCameraCharacteristics(cameraId)
         activeArraySize = characteristics.get(SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: Rect()
 
-        maxZoom = characteristics.get(SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)?.toDouble() ?: ZOOM_SCALE
         calculateZoomSize(manager = cameraManager)
         calculateActiveArraySize(manager = cameraManager)
-        Log.d(TAG, "CameraID($cameraId) -> maxZoom $maxZoom")
     }
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
@@ -274,8 +270,6 @@ class Camera constructor(private val cameraManager: CameraManager) {
         this.surfaces = surfaces
         if(surfaces.size > 1)
             startDualCamera(surfaces)
-        else
-            startSingleCamera(surfaces[0])
     }
 
     fun takePicture(handler: ImageHandler) {
@@ -323,111 +317,9 @@ class Camera constructor(private val cameraManager: CameraManager) {
 
     fun getCameraIds(): CameraIdInfo = CameraIdInfo(cameraId, physicalCameraIds.toList())
 
-    // Zooming
-
-    /** Sets the digital zoom. Must be called while the preview is active.  */
-    fun setZoom(zoomValue: Double) {
-        if (zoomValue > maxZoom)
-            Log.e(TAG, "out of bounds zoom")
-        this.zoomValue = zoomValue
-
-        try {
-            captureSession?.stopRepeating()
-            setCropRegion(requestBuilder, zoomValue)
-            requestBuilder?.build()?.let {
-                captureSession?.setRepeatingRequest(it, captureCallback, backgroundHandler)
-            }
-        } catch (e: CameraAccessException) {
-            Log.w(TAG, e)
-        }
-    }
-
-    /**
-     * Focus manually
-     * @param x touch X coordinate
-     * @param y touch Y coordinate
-     * @param width screen width
-     * @param height screen height
-     */
-    fun manualFocus(x: Float, y: Float, width: Int, height: Int) {
-        // captureSession can be null with Monkey tap
-        if (captureSession == null || cameraDevice == null) {
-            return
-        }
-        try {
-            val builder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
-
-            // TODO: set current Surface by aquiring current cameraID that's been used
-            //builder.addTarget(surface)
-
-            val rect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-            val areaSize = 200
-
-            if (rect == null) {
-                return
-            }
-
-            val right = rect.right
-            val bottom = rect.bottom
-            val centerX = x.toInt()
-            val centerY = y.toInt()
-            // Adjust the point of focus in the screen
-            val ll = (centerX * right - areaSize) / width
-            val rr = (centerY * bottom - areaSize) / height
-
-            val focusLeft = clamp(ll, 0, right)
-            val focusBottom = clamp(rr, 0, bottom)
-            val newRect = Rect(focusLeft, focusBottom, focusLeft + areaSize, focusBottom + areaSize)
-            // Adjust focus area with metering weight
-            val meteringRectangle = MeteringRectangle(newRect, 500)
-            builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(meteringRectangle))
-            builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(meteringRectangle))
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-
-            // Request should be repeated to maintain preview focus
-            captureSession?.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
-
-            // Trigger Focus
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            builder.set(
-                CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
-                CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
-            )
-            captureSession?.capture(builder.build(), captureCallback, backgroundHandler)
-        } catch (e: IllegalStateException) {
-        } catch (e: CameraAccessException) {
-        }
-    }
-
-    /**
-     * Retrieves the image orientation from the specified screen rotation.
-     * Used to calculate bitmap image rotation
-     */
-    fun getImageOrientation(): Int {
-        if (deviceRotation == OrientationEventListener.ORIENTATION_UNKNOWN) {
-            return 0
-        }
-        val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        // Sensor orientation is 90 for most devices, or 270 for some devices (eg. Nexus 5X)
-        // We have to take that into account and rotate JPEG properly.
-        // For devices with orientation of 90, we simply return our mapping from ORIENTATIONS.
-        // For devices with orientation of 270, we need to rotate the JPEG 180 degrees.
-        return (ORIENTATIONS.get(deviceRotation) + sensorOrientation + 270) % 360
-    }
-
-    fun getCaptureSize() = characteristics.getCaptureSize(CompareSizesByArea())
-
     fun getPreviewSize(aspectRatio: Float) = characteristics.getPreviewSize(aspectRatio)
 
-    private fun startSingleCamera(surface: Surface) {
-        val size = characteristics.getCaptureSize(CompareSizesByArea())
-        imageReader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 1)
-        cameraDevice?.createCaptureSession(
-            listOf(surface, imageReader?.surface),
-            captureStateCallback,
-            backgroundHandler
-        )
-    }
+
 
     private fun getCameraCharacteristics(cameraId: String): CameraCharacteristics {
         return cameraManager.getCameraCharacteristics(cameraId)
@@ -461,11 +353,6 @@ class Camera constructor(private val cameraManager: CameraManager) {
         return Pair(horizontalFov, verticalFov)
     }
 
-    private fun processImage(image: Image, isWide: Boolean) {
-        // Convert YUV_420_888 to Mat, apply distortion correction, etc.
-    }
-
-
     // 물리 카메라 ID에 대한 내부 행렬을 로그로 출력
     fun logCameraIntrinsicMatrices() {
 
@@ -478,58 +365,23 @@ class Camera constructor(private val cameraManager: CameraManager) {
     }
 
     private fun startDualCamera(surfaces: List<Surface>) {
-//        val outputConfigs = surfaces.mapIndexed { index, surface ->
-//            val physicalCameraId = physicalCameraIds.toList()[index]
-//            Log.d("test", "index: $index")
-//            Log.d("test", "physicalCameraId: $physicalCameraId")
-//            val config = OutputConfiguration(surface)
-//            config.setPhysicalCameraId(physicalCameraId)
-//            config
-//        }
-
         val outputConfigs = surfaces.mapIndexed { index, surface ->
             val physicalCameraId = physicalCameraIds.toList()[index]
+            Log.d("test", "index: $index")
+            Log.d("test", "physicalCameraId: $physicalCameraId")
             val config = OutputConfiguration(surface)
             config.setPhysicalCameraId(physicalCameraId)
             config
-        } + OutputConfiguration(imageReaderWide.surface) + OutputConfiguration(imageReaderUltraWide.surface)
+        }
 
+        val executor = Executors.newCachedThreadPool()
         val sessionConfig = SessionConfiguration(
             SessionConfiguration.SESSION_REGULAR,
             outputConfigs,
-            Executors.newCachedThreadPool(),
+            executor,
             captureStateCallback
         )
-
-
-
-        val executor = Executors.newCachedThreadPool()
-//        val sessionConfig = SessionConfiguration(
-//            SessionConfiguration.SESSION_REGULAR,
-//            outputConfigs,
-//            executor,
-//            captureStateCallback
-//        )
         cameraDevice?.createCaptureSession(sessionConfig)
-    }
-
-    private lateinit var imageReaderWide: ImageReader
-    private lateinit var imageReaderUltraWide: ImageReader
-
-    fun setUpImageReaders(wideSize: Size, ultraWideSize: Size) {
-        imageReaderWide = ImageReader.newInstance(wideSize.width, wideSize.height, ImageFormat.YUV_420_888, 2).apply {
-            setOnImageAvailableListener({ reader ->
-                imageListener?.onImageAvailable(reader.acquireNextImage(), true)
-                Log.d("test", "실행중1")
-            }, backgroundHandler)
-        }
-        imageReaderUltraWide = ImageReader.newInstance(ultraWideSize.width, ultraWideSize.height, ImageFormat.YUV_420_888, 2).apply {
-            setOnImageAvailableListener({ reader ->
-                imageListener?.onImageAvailable(reader.acquireNextImage(), false)
-                Log.d("test", "실행중2")
-
-            }, backgroundHandler)
-        }
     }
 
     interface ImageAvailableListener {
@@ -606,18 +458,6 @@ class Camera constructor(private val cameraManager: CameraManager) {
         }
     }
 
-    fun startCaptureSession() {
-        val surfaces = listOf(imageReaderWide.surface, imageReaderUltraWide.surface)
-        cameraDevice?.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                // Capture 설정
-            }
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-                Log.e(TAG, "Failed to configure capture session.")
-            }
-        }, backgroundHandler)
-    }
-
     private fun startBackgroundHandler() {
         if (backgroundThread != null)
             return
@@ -653,11 +493,11 @@ class Camera constructor(private val cameraManager: CameraManager) {
             requestBuilder?.build()?.let {
                 captureSession?.setRepeatingRequest(it, captureCallback, backgroundHandler)
             }
-        } catch (e1: IllegalStateException) {
+        } catch (_: IllegalStateException) {
 
-        } catch (e2: CameraAccessException) {
+        } catch (_: CameraAccessException) {
 
-        } catch (e3: InterruptedException) {
+        } catch (_: InterruptedException) {
 
         } finally {
             openLock.release()

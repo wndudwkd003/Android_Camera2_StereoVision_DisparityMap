@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.ImageFormat
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.net.Uri
@@ -16,15 +18,17 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.provider.Settings
 import android.util.Log
+import android.util.Size
 import android.view.Surface
-import android.view.TextureView
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.wnview.camera_stereo_vision.views.AutoFitTextureView
 import com.wnview.camera_stereo_vision.R
 import com.wnview.camera_stereo_vision.databinding.ActivityCalibrationBinding
 import com.wnview.camera_stereo_vision.dialogs.ErrorMessageDialog
@@ -43,6 +47,7 @@ import org.opencv.core.MatOfPoint3f
 import org.opencv.core.Point3
 import org.opencv.core.TermCriteria
 import org.opencv.imgproc.Imgproc
+import kotlin.math.abs
 
 
 class CalibrationActivity : AppCompatActivity() {
@@ -58,16 +63,18 @@ class CalibrationActivity : AppCompatActivity() {
     }
 
     private lateinit var binding: ActivityCalibrationBinding
-    private lateinit var textureView: TextureView
+    private lateinit var textureView: AutoFitTextureView
     private lateinit var resultImageView: ImageView
 
     private val images = ArrayList<Mat>()
-    private val checkerboardSize = org.opencv.core.Size(6.0, 9.0) // 체커보드의 각 줄에 있는 내부 코너 수
-    private val imageSize = org.opencv.core.Size(1080.0, 1920.0) // 이미지 크기를 저장할 변수
+    private val checkerboardSize = org.opencv.core.Size(9.0, 6.0) // 체커보드의 각 줄에 있는 내부 코너 수
+    private val imageSize = org.opencv.core.Size(1080.0, 1080.0) // 이미지 크기를 저장할 변수
+    private val squareSize = 60.0
+
     private val objectPoints = ArrayList<Mat>() // 3D 공간에서의 포인트
     private val imagePoints = ArrayList<Mat>() // 2D 이미지 평면에서의 포인트
 
-    private val takePictureMaxCount = 5
+    private val takePictureMaxCount = 30
     private val saveImageFlag = false
     private var permissionGranted = false
     private var isWide = true
@@ -76,6 +83,8 @@ class CalibrationActivity : AppCompatActivity() {
     private var cameraDevice: CameraDevice? = null
     private var cameraHandler: Handler? = null
     private var cameraThread: HandlerThread? = null
+
+    private var bestSize: Size? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -274,7 +283,7 @@ class CalibrationActivity : AppCompatActivity() {
             val objp = ArrayList<Point3>().apply {
                 for (i in 0 until checkerboardSize.height.toInt()) {
                     for (j in 0 until checkerboardSize.width.toInt()) {
-                        val point3 = Point3(j.toDouble(), i.toDouble(), 0.0)
+                        val point3 = Point3(j * squareSize, i * squareSize, 0.0)
                         add(point3)
                         Log.d("test", "point3: $point3")
                     }
@@ -373,6 +382,22 @@ class CalibrationActivity : AppCompatActivity() {
 
     private fun openCamera(cameraId: String) {
         val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val characteristics = manager.getCameraCharacteristics(cameraId)
+        val targetResolution = Size(1080, 1080) // 원하는 해상도로 설정
+
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val outputSizes = map?.getOutputSizes(ImageFormat.JPEG)
+
+        bestSize = outputSizes?.let { sizes ->
+            sizes.filter { it.width == it.height }.minByOrNull { size ->
+                abs(size.width - targetResolution.width)
+            }
+        } ?: targetResolution
+
+        val aspectRatio = bestSize!!.width.toDouble() / bestSize!!.height.toDouble()
+        val textureWidth = textureView.width
+        val textureHeight = (textureWidth / aspectRatio).toInt()
+        textureView.layoutParams = ViewGroup.LayoutParams(textureWidth, textureHeight)
         startCameraThread()  // 카메라 작업을 위한 스레드 시작
 
         try {
@@ -405,7 +430,7 @@ class CalibrationActivity : AppCompatActivity() {
     private fun createCameraPreviewSession(camera: CameraDevice) {
         try {
             val texture = textureView.surfaceTexture
-            texture!!.setDefaultBufferSize(imageSize.width.toInt(), imageSize.height.toInt())
+            texture?.setDefaultBufferSize(bestSize!!.width, bestSize!!.height)
             val surface = Surface(texture)
 
             val previewRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
