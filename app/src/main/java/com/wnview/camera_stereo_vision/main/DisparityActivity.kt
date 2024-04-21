@@ -3,6 +3,7 @@ package com.wnview.camera_stereo_vision.main
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -24,11 +25,17 @@ import com.wnview.camera_stereo_vision.R
 import com.wnview.camera_stereo_vision.databinding.ActivityDisparityBinding
 import com.wnview.camera_stereo_vision.services.Camera
 import com.wnview.camera_stereo_vision.dialogs.ErrorMessageDialog
+import com.wnview.camera_stereo_vision.models.CameraParameters
 import com.wnview.camera_stereo_vision.utils.applyWLSFilterAndColorMap
 import com.wnview.camera_stereo_vision.utils.bitmap2Mat
 import com.wnview.camera_stereo_vision.utils.calculateDisparity
 import com.wnview.camera_stereo_vision.utils.cropUltraWideToWideAngle
+import com.wnview.camera_stereo_vision.utils.findAndDrawChessboardCorners
 import com.wnview.camera_stereo_vision.utils.mat2Bitmap
+import com.wnview.camera_stereo_vision.utils.performCalibration
+import com.wnview.camera_stereo_vision.utils.saveImageToGallery
+import com.wnview.camera_stereo_vision.utils.sharpening
+import com.wnview.camera_stereo_vision.utils.sharpeningAndEqualizeHist
 import com.wnview.camera_stereo_vision.views.AutoFitTextureView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -53,25 +60,32 @@ class DisparityActivity : AppCompatActivity() {
     }
 
     private var flagResultVisible = true
-
     private var camera: Camera? = null
 
     private lateinit var binding: ActivityDisparityBinding
-
     private lateinit var textureViewWide: AutoFitTextureView
     private lateinit var textureViewUltraWide: AutoFitTextureView
-    private lateinit var resultImageView: ImageView
 
+    // 카메라 시야각
+    private lateinit var wideFov: Pair<Double, Double>
+    private lateinit var ultraWideFov: Pair<Double, Double>
+
+    // 카메라 캘리브레이션
+    private val calibPairImageList = mutableListOf<Pair<Mat, Mat>>()
+    private var calibMaxCount = 15
+    private val squareSize = 60.0
+    private val checkerboardSize = org.opencv.core.Size(9.0, 6.0)
+
+    private lateinit var cameraParametersList: List<CameraParameters>
 
     private lateinit var wideCameraMatrix : Mat
     private lateinit var wideDistCoeffs: Mat
     private lateinit var uwCameraMatrix : Mat
     private lateinit var uwDistCoeffs: Mat
 
-    private lateinit var wideFov: Pair<Double, Double>
-    private lateinit var ultraWideFov: Pair<Double, Double>
-
+    // 코루틴
     private var captureJob: Job? = null
+    private var flagPicture = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -114,8 +128,46 @@ class DisparityActivity : AppCompatActivity() {
         textureViewWide = binding.textureViewWide
         textureViewUltraWide = binding.textureViewUltraWide
 
+        binding.fabCalibTakePicture.setOnClickListener {
+            if (calibPairImageList.size < calibMaxCount) {
+                lifecycleScope.launch(Dispatchers.Default) {
+                    val wideCameraBitmap = textureViewWide.bitmap
+                    val ultraWideCameraBitmap = textureViewUltraWide.bitmap
+
+                    val wideMat = bitmap2Mat(wideCameraBitmap!!)
+                    val ultraWideMat = bitmap2Mat(ultraWideCameraBitmap!!)
+
+                    val resizeUltraWideMat = cropUltraWideToWideAngle(ultraWideMat, wideMat, wideFov, ultraWideFov)
+
+                    val checkerWidePair = findAndDrawChessboardCorners(wideMat, checkerboardSize)
+                    val checkerUltraWidePair = findAndDrawChessboardCorners(resizeUltraWideMat, checkerboardSize)
+
+                    val resultWideBitmap: Bitmap? = checkerWidePair.second?.let { mat2Bitmap(it) }
+                    val resultUltraWideBitmap: Bitmap? = checkerUltraWidePair.second?.let { mat2Bitmap(it) }
+
+                    if (checkerWidePair.first && checkerUltraWidePair.first) {
+                        calibPairImageList.add(Pair(wideMat, resizeUltraWideMat))
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        resultWideBitmap?.let {
+                            binding.ivResult.setImageBitmap(it)
+                        }
+                        resultUltraWideBitmap?.let {
+                            binding.ivResult2.setImageBitmap(it)
+                        }
+                    }
+                }
+            } else {
+                lifecycleScope.launch(Dispatchers.Default) {
+                    cameraParametersList = performCalibration(checkerboardSize, squareSize, calibPairImageList)
+                    Toast.makeText(this@DisparityActivity, "캘리브레이션 완료", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
 
         binding.fabTakePicture.setOnClickListener {
+            flagPicture = true
             if (captureJob == null || captureJob?.isActive == false) {
                 captureJob = lifecycleScope.launch(Dispatchers.Default) {
                     while (isActive) {
@@ -127,14 +179,17 @@ class DisparityActivity : AppCompatActivity() {
                         val wideMat = bitmap2Mat(wideCameraBitmap!!)
                         val ultraWideMat = bitmap2Mat(ultraWideCameraBitmap!!)
 
+
                         // 왜곡 보정
                         // val correctWideMat = distortionCorrect(wideMat, true)
                         // val correctWideBitmap = mat2Bitmap(correctWideMat)
-                        val correctUltraWideMat = distortionCorrect(ultraWideMat, false)
+                        // val correctUltraWideMat = distortionCorrect(ultraWideMat, false)
 
                         // 울트라 와이드 카메라 이미지 크롭
-                        val resizeUltraWideMat = cropUltraWideToWideAngle(correctUltraWideMat, wideMat, wideFov, ultraWideFov)
+                        val resizeUltraWideMat = cropUltraWideToWideAngle(ultraWideMat, wideMat, wideFov, ultraWideFov)
+                        // val sharpenedUltraWideMat = sharpeningAndEqualizeHist(resizeUltraWideMat)
                         val resizeUltraWideMatBitmap = mat2Bitmap(resizeUltraWideMat)
+
 
                         // disparity map 계산
                         val wideDisparityMap = calculateDisparity(wideMat, resizeUltraWideMat)
@@ -149,6 +204,16 @@ class DisparityActivity : AppCompatActivity() {
                         withContext(Dispatchers.Main) {
                             binding.ivResult.setImageBitmap(resizeUltraWideMatBitmap)
                             binding.ivResult2.setImageBitmap(resultBitmap)
+
+
+                            if (flagPicture) {
+                                flagPicture = false
+                                saveImageToGallery(this@DisparityActivity, wideCameraBitmap, "wideCameraBitmap")
+                                saveImageToGallery(this@DisparityActivity, resizeUltraWideMatBitmap, "resizeUltraWideMatBitmap")
+                                saveImageToGallery(this@DisparityActivity, resultBitmap, "resultBitmap")
+                            }
+
+
 //                            Log.d("test", "wide fov: $wideFov")
 //                            Log.d("test", "ultra wide fov: $ultraWideFov")
 //

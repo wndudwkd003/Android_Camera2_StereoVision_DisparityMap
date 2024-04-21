@@ -12,12 +12,22 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
+import androidx.lifecycle.lifecycleScope
+import com.wnview.camera_stereo_vision.main.CalibrationActivity
+import com.wnview.camera_stereo_vision.models.CameraParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.opencv.android.Utils
-import org.opencv.calib3d.StereoSGBM
+import org.opencv.calib3d.Calib3d
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint2f
+import org.opencv.core.MatOfPoint3f
+import org.opencv.core.Point3
 import org.opencv.core.Rect
+import org.opencv.core.Size
+import org.opencv.core.TermCriteria
 import org.opencv.imgproc.Imgproc
 import java.io.ByteArrayOutputStream
 
@@ -74,7 +84,7 @@ fun logMatDetails(title: String, mat: Mat) {
     }
 }
 
-fun cropCenter(mat: Mat, targetSize: org.opencv.core.Size): Mat {
+fun cropCenter(mat: Mat, targetSize: Size): Mat {
     // 중앙 위치 계산
     val centerX = mat.width() / 2
     val centerY = mat.height() / 2
@@ -113,7 +123,7 @@ fun cropUltraWideToWideAngle(ultraWideMat: Mat, wideMat: Mat, wideFov: Pair<Doub
     Imgproc.resize(
         ultraWideMat,
         scaledUwMat,
-        org.opencv.core.Size(scaledWidth.toDouble(), scaledHeight.toDouble())
+        Size(scaledWidth.toDouble(), scaledHeight.toDouble())
     )
 
     // 확대된 울트라와이드 이미지 크롭
@@ -279,4 +289,176 @@ fun imageToByteArray(image: Image): ByteArray {
     val bytes = ByteArray(buffer.capacity())
     buffer.get(bytes)
     return bytes
+}
+
+
+fun sharpening(srcMat: Mat): Mat {
+    val blurred = Mat()
+    Imgproc.GaussianBlur(srcMat, blurred, Size(0.0, 0.0), 3.0)
+    val sharpened = Mat()
+    Core.addWeighted(srcMat, 1.5, blurred, -0.5, 0.0, sharpened)
+    return sharpened
+}
+
+
+fun sharpeningAndEqualizeHist(srcMat: Mat): Mat {
+    val sharpenedMat = sharpening(srcMat)
+
+    // 단일 채널 그레이스케일 이미지로 변환
+    val grayMat = Mat()
+    Imgproc.cvtColor(sharpenedMat, grayMat, Imgproc.COLOR_BGR2GRAY)
+
+    val equalized = Mat()
+    Imgproc.equalizeHist(grayMat, equalized)
+
+    return equalized
+}
+
+fun findAndDrawChessboardCorners(srcMat: Mat, checkerboardSize: Size): Pair<Boolean, Mat?> {
+    val resultMat = Mat()
+    srcMat.copyTo(resultMat)     // 반환하기 위해 원본의 컬러 이미지 Mat을 복사해둠
+
+    val gray = Mat()
+    Imgproc.cvtColor(resultMat, gray, Imgproc.COLOR_RGB2GRAY)
+
+    // 체스보드 코너를 찾으면 true 반환, corners에 코너 저장
+    val corners = MatOfPoint2f()
+    val found = Calib3d.findChessboardCorners(gray, checkerboardSize, corners)
+
+    if (found) {
+        // 반복 알고리즘의 종료 기준 설정
+        val criteria = TermCriteria(TermCriteria.EPS + TermCriteria.MAX_ITER, 10, 0.1)
+
+        // 세밀한 코너 위치 조정
+        Imgproc.cornerSubPix(gray, corners, Size(11.0, 11.0), Size(-1.0, -1.0), criteria)
+
+        // 체커보드 코너를 이미지에 표시
+        Calib3d.drawChessboardCorners(resultMat, checkerboardSize, corners, found)
+
+        return Pair(found, resultMat)
+    }
+    return Pair(found, null)
+}
+
+fun findImageCorners(srcMat: Mat, checkerboardSize: Size): Pair<Boolean, MatOfPoint2f> {
+    val resultMat = Mat()
+    srcMat.copyTo(resultMat)     // 반환하기 위해 원본의 컬러 이미지 Mat을 복사해둠
+
+    val gray = Mat()
+    Imgproc.cvtColor(resultMat, gray, Imgproc.COLOR_RGB2GRAY)
+
+    // 체스보드 코너를 찾으면 true 반환, corners에 코너 저장
+    val corners = MatOfPoint2f()
+    val found = Calib3d.findChessboardCorners(gray, checkerboardSize, corners)
+
+    if (found) {
+        // 반복 알고리즘의 종료 기준 설정
+        val criteria = TermCriteria(TermCriteria.EPS + TermCriteria.MAX_ITER, 10, 0.1)
+
+        // 세밀한 코너 위치 조정
+        Imgproc.cornerSubPix(gray, corners, Size(11.0, 11.0), Size(-1.0, -1.0), criteria)
+    }
+
+    return Pair(found, corners)
+}
+
+fun performCalibration(checkerboardSize: Size, squareSize: Double, calibImageList: List<Pair<Mat, Mat>>): List<CameraParameters> {
+    val objectPoints1 = ArrayList<Mat>() // 3D 공간에서의 포인트
+    val imagePoints1 = ArrayList<Mat>() // 2D 이미지 평면에서의 포인트
+
+    val objectPoints2 = ArrayList<Mat>() // 3D 공간에서의 포인트
+    val imagePoints2 = ArrayList<Mat>() // 2D 이미지 평면에서의 포인트
+
+    // 원점의 3D 포인트 생성
+    val objp = ArrayList<Point3>().apply {
+        for (i in 0 until checkerboardSize.height.toInt()) {
+            for (j in 0 until checkerboardSize.width.toInt()) {
+                val point3 = Point3(j * squareSize, i * squareSize, 0.0)
+                add(point3)
+                Log.d("test", "point3: $point3")
+            }
+        }
+    }
+
+    val obj1 = MatOfPoint3f()
+    val obj2 = MatOfPoint3f()
+    obj1.fromList(objp)
+    obj2.fromList(objp)
+
+    // 모든 이미지에 대해 반복하여 각 이미지의 2D 포인트와 매핑된 3D 포인트를 저장합니다.
+    for (pair in calibImageList) {
+        val imageCorners = findImageCorners(pair.first, checkerboardSize)
+        if (imageCorners.first) {
+            objectPoints1.add(obj1.clone())
+            imagePoints1.add(imageCorners.second)
+        }
+    }
+
+    for (pair in calibImageList) {
+        val imageCorners = findImageCorners(pair.second, checkerboardSize)
+        if (imageCorners.first) {
+            objectPoints2.add(obj1.clone())
+            imagePoints2.add(imageCorners.second)
+        }
+    }
+
+    val cameraMatrix1 = Mat()
+    val distCoeffs1 = Mat()
+    val rvecs1 = ArrayList<Mat>()
+    val tvecs1 = ArrayList<Mat>()
+
+    val cameraMatrix2 = Mat()
+    val distCoeffs2 = Mat()
+    val rvecs2 = ArrayList<Mat>()
+    val tvecs2 = ArrayList<Mat>()
+
+    Calib3d.calibrateCamera(
+        objectPoints1,
+        imagePoints1,
+        Size(squareSize, squareSize),
+        cameraMatrix1,
+        distCoeffs1,
+        rvecs1,
+        tvecs1
+    )
+
+    Calib3d.calibrateCamera(
+        objectPoints2,
+        imagePoints2,
+        Size(squareSize, squareSize),
+        cameraMatrix2,
+        distCoeffs2,
+        rvecs2,
+        tvecs2
+    )
+
+    val cameraParameters1 = CameraParameters()
+    cameraParameters1.cameraMatrix = cameraMatrix1
+    cameraParameters1.distCoeffs = distCoeffs1
+    cameraParameters1.rvecs = rvecs1
+    cameraParameters1.tvecs = tvecs1
+
+    val cameraParameters2 = CameraParameters()
+    cameraParameters2.cameraMatrix = cameraMatrix2
+    cameraParameters2.distCoeffs = distCoeffs2
+    cameraParameters2.rvecs = rvecs2
+    cameraParameters2.tvecs = tvecs2
+
+
+    val cameraParametersList = listOf(cameraParameters1, cameraParameters2)
+
+    Log.d("test", "Camera Matrix1: $cameraMatrix1")
+    Log.d("test", "Distortion Coefficients1: $distCoeffs1")
+
+    logMatDetails("Camera Matrix1", cameraMatrix1)
+    logMatDetails("Distortion Coefficients1", distCoeffs1)
+
+
+    Log.d("test", "Camera Matrix2: $cameraMatrix2")
+    Log.d("test", "Distortion Coefficients2: $distCoeffs2")
+
+    logMatDetails("Camera Matrix2", cameraMatrix2)
+    logMatDetails("Distortion Coefficients2", distCoeffs2)
+
+    return cameraParametersList
 }
