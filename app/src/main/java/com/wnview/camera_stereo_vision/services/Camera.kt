@@ -38,6 +38,7 @@ import com.wnview.camera_stereo_vision.camera.getPreviewSize
 import com.wnview.camera_stereo_vision.camera.isAutoExposureSupported
 import com.wnview.camera_stereo_vision.camera.isContinuousAutoFocusSupported
 import com.wnview.camera_stereo_vision.models.CameraIdInfo
+import com.wnview.camera_stereo_vision.utils.calculateFov
 import com.wnview.camera_stereo_vision.utils.calculateIntrinsicMatrix
 import java.util.concurrent.*
 import kotlin.math.atan
@@ -103,7 +104,6 @@ class Camera constructor(private val cameraManager: CameraManager) {
 
 
     private var state = State.PREVIEW
-    private var aeMode = CaptureRequest.CONTROL_AE_MODE_ON
     private var preAfState: Int? = null
 
     private val activeArraySize: Rect
@@ -316,37 +316,10 @@ class Camera constructor(private val cameraManager: CameraManager) {
 
 
 
-    private fun getCameraCharacteristics(cameraId: String): CameraCharacteristics {
-        return cameraManager.getCameraCharacteristics(cameraId)
+    fun calculateCameraFov(cameraId: String): Pair<Double, Double> {
+        return calculateFov(cameraId, cameraManager)
     }
 
-    private fun calculateCameraFov(cameraId: String): Pair<Double, Double> {
-        val characteristics = getCameraCharacteristics(cameraId)
-        return calculateFov(characteristics)
-    }
-
-    fun listAllCameraFov(): Map<String, Pair<Double, Double>> {
-        val fovMap = mutableMapOf<String, Pair<Double, Double>>()
-        physicalCameraIds.forEach { cameraId ->
-            val fov = calculateCameraFov(cameraId)
-            fovMap[cameraId] = fov
-        }
-        return fovMap.toMap()
-    }
-
-    fun calculateFov(characteristics: CameraCharacteristics): Pair<Double, Double> {
-        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)!!
-        val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)!!
-
-        val focalLength = focalLengths[0] // 초점 거리 (mm)
-        val sensorWidth = sensorSize.width // 센서 너비 (mm)
-        val sensorHeight = sensorSize.height // 센서 높이 (mm)
-
-        val horizontalFov = Math.toDegrees(2.0 * atan((sensorWidth / 2.0) / focalLength))
-        val verticalFov = Math.toDegrees(2.0 * atan((sensorHeight / 2.0) / focalLength))
-
-        return Pair(horizontalFov, verticalFov)
-    }
 
     // 물리 카메라 ID에 대한 내부 행렬을 로그로 출력
     fun logCameraIntrinsicMatrices() {
@@ -489,25 +462,7 @@ class Camera constructor(private val cameraManager: CameraManager) {
             // Auto focus should be continuous for camera preview.
             // Use the same AE and AF modes as the preview.
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-
-            if (characteristics.isContinuousAutoFocusSupported()) {
-                set(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                )
-            } else {
-                set(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_AUTO
-                )
-            }
-
-            if (characteristics.isAutoExposureSupported(aeMode)) {
-                set(CaptureRequest.CONTROL_AE_MODE, aeMode)
-            } else {
-                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            }
-
+            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY)
         }
     }

@@ -3,22 +3,20 @@ package com.wnview.camera_stereo_vision.main
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
-import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.media.Image
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.View
-import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.Toast
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -26,21 +24,23 @@ import com.wnview.camera_stereo_vision.R
 import com.wnview.camera_stereo_vision.databinding.ActivityDisparityBinding
 import com.wnview.camera_stereo_vision.services.Camera
 import com.wnview.camera_stereo_vision.dialogs.ErrorMessageDialog
+import com.wnview.camera_stereo_vision.utils.applyWLSFilterAndColorMap
 import com.wnview.camera_stereo_vision.utils.bitmap2Mat
+import com.wnview.camera_stereo_vision.utils.calculateDisparity
+import com.wnview.camera_stereo_vision.utils.cropUltraWideToWideAngle
 import com.wnview.camera_stereo_vision.utils.mat2Bitmap
 import com.wnview.camera_stereo_vision.views.AutoFitTextureView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencv.android.OpenCVLoader
 import org.opencv.calib3d.Calib3d
-import org.opencv.calib3d.StereoBM
-import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
-import org.opencv.core.Rect
-import org.opencv.imgproc.Imgproc
-import java.io.ByteArrayOutputStream
 import kotlin.math.abs
 
 class DisparityActivity : AppCompatActivity() {
@@ -52,10 +52,9 @@ class DisparityActivity : AppCompatActivity() {
         fun newInstance() = DisparityActivity()
     }
 
-    private var flagResultVisible = false
+    private var flagResultVisible = true
 
     private var camera: Camera? = null
-    private lateinit var previewSize: Size
 
     private lateinit var binding: ActivityDisparityBinding
 
@@ -69,16 +68,20 @@ class DisparityActivity : AppCompatActivity() {
     private lateinit var uwCameraMatrix : Mat
     private lateinit var uwDistCoeffs: Mat
 
+    private lateinit var wideFov: Pair<Double, Double>
+    private lateinit var ultraWideFov: Pair<Double, Double>
+
+    private var captureJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityDisparityBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        if (!OpenCVLoader.initDebug())
-            Log.e("OpenCV", "Unable to load OpenCV!")
-        else
-            Log.d("OpenCV", "OpenCV loaded Successfully!")
+        if (!OpenCVLoader.initDebug()) {
+            Log.e(TAG, "Unable to load OpenCV!")
+            return
+        }
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
@@ -113,36 +116,52 @@ class DisparityActivity : AppCompatActivity() {
 
 
         binding.fabTakePicture.setOnClickListener {
-            lifecycleScope.launch {
-                // 카메라에서 이미지 가져오기
-                val wideCameraBitmap = textureViewWide.bitmap
-                val ultraWideCameraBitmap = textureViewUltraWide.bitmap
+            if (captureJob == null || captureJob?.isActive == false) {
+                captureJob = lifecycleScope.launch(Dispatchers.Default) {
+                    while (isActive) {
+                        // 카메라에서 이미지 가져오기
+                        val wideCameraBitmap = textureViewWide.bitmap
+                        val ultraWideCameraBitmap = textureViewUltraWide.bitmap
 
-                // Mat으로 변환
-                val wideMat = bitmap2Mat(wideCameraBitmap!!)
-                val ultraWideMat = bitmap2Mat(ultraWideCameraBitmap!!)
+                        // Mat으로 변환
+                        val wideMat = bitmap2Mat(wideCameraBitmap!!)
+                        val ultraWideMat = bitmap2Mat(ultraWideCameraBitmap!!)
 
-                // 왜곡 보정
-                val correctWideMat = distortionCorrect(ultraWideMat, true)
-                val correctUltraWideMat = distortionCorrect(ultraWideMat, false)
+                        // 왜곡 보정
+                        // val correctWideMat = distortionCorrect(wideMat, true)
+                        // val correctWideBitmap = mat2Bitmap(correctWideMat)
+                        val correctUltraWideMat = distortionCorrect(ultraWideMat, false)
 
-                // 울트라 와이드 카메라 이미지 크롭
-                val croppedUltraWideMat = cropCenter(correctWideMat, org.opencv.core.Size(wideMat.width().toDouble(), wideMat.height().toDouble()))
-                val croppedUltraWideBitmap = mat2Bitmap(croppedUltraWideMat)
+                        // 울트라 와이드 카메라 이미지 크롭
+                        val resizeUltraWideMat = cropUltraWideToWideAngle(correctUltraWideMat, wideMat, wideFov, ultraWideFov)
+                        val resizeUltraWideMatBitmap = mat2Bitmap(resizeUltraWideMat)
 
-                // disparity map 계산
-                val disparityMap = calculateDisparity(wideMat, ultraWideMat)
+                        // disparity map 계산
+                        val wideDisparityMap = calculateDisparity(wideMat, resizeUltraWideMat)
+                        // val ultraWideDisparityMap = calculateDisparity(resizeUltraWideMat, correctWideMat)
 
-                // disparity map을 자연스럽게 시각화된 비트맵으로 변환
-                val resultBitmap = visualizeDisparity(disparityMap)
+                        // disparity map을 자연스럽게 시각화된 비트맵으로 변환
+                        // val resultBitmap = disparityToBitmap(disparityMap)
+                        //val resultBitmap = visualizeDisparity(disparityMap)
+                        val resultBitmap = applyWLSFilterAndColorMap(wideDisparityMap, wideMat)
 
-                // UI 스레드에서 ImageView 업데이트
-                runOnUiThread {
-                    binding.ivResult.setImageBitmap(resultBitmap)
-
-                    val bitmap = textureViewWide.bitmap
-                    binding.ivResult.setImageBitmap(resultBitmap)
-
+                        // UI 스레드에서 ImageView 업데이트
+                        withContext(Dispatchers.Main) {
+                            binding.ivResult.setImageBitmap(resizeUltraWideMatBitmap)
+                            binding.ivResult2.setImageBitmap(resultBitmap)
+//                            Log.d("test", "wide fov: $wideFov")
+//                            Log.d("test", "ultra wide fov: $ultraWideFov")
+//
+//
+//                            // wide textureView의 위치 및 크기 출력
+//                            Log.d(TAG, "Wide TextureView - Width: ${textureViewWide.width}, Height: ${textureViewWide.height}")
+//                            Log.d(TAG, "Wide TextureView - X: ${textureViewWide.x}, Y: ${textureViewWide.y}")
+//
+//                            // ultra wide textureView의 위치 및 크기 출력
+//                            Log.d(TAG, "Ultra Wide TextureView - Width: ${textureViewUltraWide.width}, Height: ${textureViewUltraWide.height}")
+//                            Log.d(TAG, "Ultra Wide TextureView - X: ${textureViewUltraWide.x}, Y: ${textureViewUltraWide.y}")
+                        }
+                    }
                 }
             }
         }
@@ -153,11 +172,16 @@ class DisparityActivity : AppCompatActivity() {
         }
 
         binding.fabCloseResultPicture.setOnClickListener {
+            captureJob?.cancel()
+            captureJob = null
+
             flagResultVisible = !flagResultVisible
             if (flagResultVisible) {
                 binding.ivResult.visibility = View.VISIBLE
+                binding.ivResult2.visibility = View.VISIBLE
             } else {
                 binding.ivResult.visibility = View.INVISIBLE
+                binding.ivResult2.visibility = View.INVISIBLE
             }
         }
 
@@ -167,69 +191,9 @@ class DisparityActivity : AppCompatActivity() {
 
     private fun startDualCamera() {
         lifecycleScope.launch {
-
-            withContext(Dispatchers.Main) {
-                openDualCamera()
-            }
-
+            openDualCamera()
         }
     }
-
-    private fun convertToGrayscale(input: Mat): Mat {
-        var grayImage = Mat()
-        if (input.channels() > 1) {
-            Imgproc.cvtColor(input, grayImage, Imgproc.COLOR_BGR2GRAY)
-        } else {
-            grayImage = input
-        }
-        return grayImage
-    }
-
-    private fun visualizeDisparity(disparity: Mat): Bitmap {
-        val normalizedDisparity = Mat()
-        // 디스패리티 맵을 0에서 255 사이로 정규화
-        Core.normalize(disparity, normalizedDisparity, 0.0, 255.0, Core.NORM_MINMAX, CvType.CV_8U)
-
-        // 컬러맵 적용
-        val colorDisparity = Mat()
-        Imgproc.applyColorMap(normalizedDisparity, colorDisparity, Imgproc.COLORMAP_JET)
-
-        return mat2Bitmap(colorDisparity)
-    }
-
-    private fun cropCenter(mat: Mat, targetSize: org.opencv.core.Size): Mat {
-        // 중앙 위치 계산
-        val centerX = mat.width() / 2
-        val centerY = mat.height() / 2
-
-        // 타겟 크기의 반을 계산하여 중앙에서 크롭
-        val startX = centerX - targetSize.width.toInt() / 2
-        val startY = centerY - targetSize.height.toInt() / 2
-
-        // 크롭 영역 설정
-        val rect = Rect(startX, startY, targetSize.width.toInt(), targetSize.height.toInt())
-
-        // 크롭된 이미지 반환
-        return Mat(mat, rect)
-    }
-
-    private fun calculateDisparity(leftImage: Mat, rightImage: Mat): Mat {
-        val leftGray = convertToGrayscale(leftImage)
-        val rightGray = convertToGrayscale(rightImage)
-
-        val disparity = Mat()
-        val stereo = StereoBM.create(16, 9)
-        stereo.compute(leftGray, rightGray, disparity)
-        return disparity
-    }
-
-
-    private fun disparityToBitmap(disparity: Mat): Bitmap {
-        val normalizedDisparity = Mat()
-        Core.normalize(disparity, normalizedDisparity, 0.0, 255.0, Core.NORM_MINMAX, CvType.CV_8U)
-        return mat2Bitmap(normalizedDisparity)
-    }
-
 
     private fun distortionCorrect(inputImage: Mat, isWide: Boolean): Mat {
         // 왜곡 제거
@@ -286,8 +250,8 @@ class DisparityActivity : AppCompatActivity() {
                 val wideTexture = textureViewWide.surfaceTexture!!
                 val ultraWideTexture = textureViewUltraWide.surfaceTexture!!
 
-                val wideId = it.getCameraIds().physicalCameraIds[0]
-                val ultraWideId = it.getCameraIds().physicalCameraIds[1]
+                val wideId = it.getCameraIds().physicalCameraIds[1]
+                val ultraWideId = it.getCameraIds().physicalCameraIds[0]
 
                 for (cameraId in arrayOf(wideId, ultraWideId)) {
                     Log.d("test", cameraId)
@@ -304,21 +268,39 @@ class DisparityActivity : AppCompatActivity() {
                     // 정사각형 비율로 설정
                     val aspectRatio = bestSize.width.toDouble() / bestSize.height.toDouble()
                     when (cameraId) {
-                        wideId -> {
-                            val textureWidth = textureViewWide.width
-                            val textureHeight = (textureWidth / aspectRatio).toInt()
-                            textureViewWide.setAspectRatio(bestSize.width, bestSize.height)
-                            textureViewWide.layoutParams = ViewGroup.LayoutParams(textureWidth, textureHeight)
-                            wideTexture.setDefaultBufferSize(bestSize.width, bestSize.height)
-                        }
                         ultraWideId -> {
                             val textureWidth = textureViewUltraWide.width
                             val textureHeight = (textureWidth / aspectRatio).toInt()
                             textureViewUltraWide.setAspectRatio(bestSize.width, bestSize.height)
-                            textureViewUltraWide.layoutParams = ViewGroup.LayoutParams(textureWidth, textureHeight * 2)
+                            val ultraWideLayoutParams = textureViewUltraWide.layoutParams as ConstraintLayout.LayoutParams
+                            ultraWideLayoutParams.width = textureWidth
+                            ultraWideLayoutParams.height = textureHeight
+                            ultraWideLayoutParams.topToTop = ConstraintLayout.LayoutParams.PARENT_ID
+                            ultraWideLayoutParams.bottomToTop = R.id.texture_view_wide
+                            textureViewUltraWide.layoutParams = ultraWideLayoutParams
                             ultraWideTexture.setDefaultBufferSize(bestSize.width, bestSize.height)
+                            camera?.calculateCameraFov(cameraId)?.let {
+                                ultraWideFov = it
+                            }
+                        }
+                        wideId -> {
+                            val textureWidth = textureViewWide.width
+                            val textureHeight = (textureWidth / aspectRatio).toInt()
+                            textureViewWide.setAspectRatio(bestSize.width, bestSize.height)
+                            val wideLayoutParams = textureViewWide.layoutParams as ConstraintLayout.LayoutParams
+                            wideLayoutParams.width = textureWidth
+                            wideLayoutParams.height = textureHeight
+                            wideLayoutParams.topToBottom = R.id.texture_view_ultra_wide
+                            wideLayoutParams.bottomToBottom = ConstraintLayout.LayoutParams.PARENT_ID
+                            wideLayoutParams.dimensionRatio = "H,1:1"
+                            textureViewWide.layoutParams = wideLayoutParams
+                            wideTexture.setDefaultBufferSize(bestSize.width, bestSize.height)
+                            camera?.calculateCameraFov(cameraId)?.let {
+                                wideFov = it
+                            }
                         }
                     }
+
                 }
                 it.start(listOf(Pair(wideId, Surface(wideTexture)), Pair(ultraWideId, Surface(ultraWideTexture))))
             }
@@ -328,80 +310,5 @@ class DisparityActivity : AppCompatActivity() {
     }
 
 
-
-    private fun processImage(image: Image, isWide: Boolean) {
-        Log.d(TAG, "Processing image, isWide: $isWide")
-        if (isWide) {
-            val yuvBytes = imageToByteArray(image)
-            Log.d(TAG, "Image bytes extracted, length: ${yuvBytes.size}")
-
-            val bitmap = convertYuvToBitmap(yuvBytes, image.width, image.height)
-            Log.d(TAG, "Bitmap converted, size: ${bitmap.width}x${bitmap.height}")
-
-            runOnUiThread {
-                Log.d(TAG, "Updating UI with new bitmap")
-                binding.ivResult.setImageBitmap(bitmap)
-            }
-        }
-        image.close()
-    }
-
-
-    private fun convertImageToBitmap(image: Image): Bitmap {
-        // Image format should be YUV_420_888
-        if (image.format != ImageFormat.YUV_420_888) {
-            throw IllegalArgumentException("Image format is not YUV_420_888")
-        }
-
-        val width = image.width
-        val height = image.height
-
-        // Get the YUV data from the image
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-
-        // U and V are swapped
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
-        val imageBytes = out.toByteArray()
-
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-    }
-
-
-
-    private fun convertYuvToBitmap(yuvBytes: ByteArray, width: Int, height: Int): Bitmap {
-        try {
-            val yuvImage = YuvImage(yuvBytes, ImageFormat.NV21, width, height, null)
-            val out = ByteArrayOutputStream()
-            yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
-            val imageBytes = out.toByteArray()
-            return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error converting YUV to Bitmap", e)
-            throw e
-        }
-    }
-
-
-    private fun imageToByteArray(image: Image): ByteArray {
-        // YUV_420_888 이미지를 바이트 배열로 변환
-        val buffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.capacity())
-        buffer.get(bytes)
-        return bytes
-    }
 
 }

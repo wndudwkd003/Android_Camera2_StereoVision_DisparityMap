@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.util.Log
 import android.util.Size
+import kotlin.math.atan
 
 fun listAllCameraIds(context: Context): List<String> {
     val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -50,3 +51,18 @@ fun calculateIntrinsicMatrix(cameraId: String, cameraManager: CameraManager): Ar
     return intrinsicMatrix
 }
 
+fun calculateFov(cameraId: String, cameraManager: CameraManager): Pair<Double, Double> {
+    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+
+    val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)!!
+    val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)!!
+
+    val focalLength = focalLengths[0] // 초점 거리 (mm)
+    val sensorWidth = sensorSize.width // 센서 너비 (mm)
+    val sensorHeight = sensorSize.height // 센서 높이 (mm)
+
+    val horizontalFov = Math.toDegrees(2.0 * atan((sensorWidth / 2.0) / focalLength))
+    val verticalFov = Math.toDegrees(2.0 * atan((sensorHeight / 2.0) / focalLength))
+
+    return Pair(horizontalFov, verticalFov)
+}
